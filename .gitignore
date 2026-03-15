@@ -1,0 +1,9 @@
+data/true.csv
+data/noisy.csv
+*.DS_Store
+output/lkf_output.csv
+output/ekf_output.csv
+simulation/animation.mp4
+simulation/animation.gif
+__pycache__/
+*.pyc
