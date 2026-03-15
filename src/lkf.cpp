@@ -208,7 +208,7 @@ static std::vector<std::vector<double>> load_csv(const std::string& path) {
 int main() {
     std::cout << "[LKF] Loading dataset..." << std::endl;
 
-    auto noisy = load_csv("../data/noisy.csv");
+    auto noisy = load_csv("data/noisy.csv");
     int T = (int)noisy.size();
     std::cout << "[LKF] Frames: " << T << std::endl;
 
@@ -332,7 +332,7 @@ int main() {
     }
 
     // ── WRITE OUTPUT CSV ─────────────────────────────────────────────────────
-    std::ofstream out("../output/lkf_output.csv");
+    std::ofstream out("output/lkf_output.csv");
     // Header
     std::vector<std::string> joints = {
         "pelvis","L5","L3","T12","T8","neck","head",

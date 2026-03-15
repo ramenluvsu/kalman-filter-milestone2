@@ -1,168 +1,158 @@
 """
-Kalman Filter Milestone-2 — 3D Full-Body Walking Simulation
-Animates 3 side-by-side skeleton views: Measured, LKF, EKF
-Exports to animation.mp4 (or animation.gif if ffmpeg unavailable)
+animate.py  
+Produces a 3-panel side-by-side 3D skeleton animation:
+  Panel 1 — LKF skeleton
+  Panel 2 — EKF skeleton
+  Panel 3 — Overlay (LKF blue, EKF red)
+Exports as  ../output/skeleton_animation.mp4
+Requires:  ffmpeg  (apt-get install ffmpeg)
 """
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from mpl_toolkits.mplot3d import Axes3D
-import os, warnings
-warnings.filterwarnings("ignore")
+from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
+import os, re
 
-# ─── paths ───────────────────────────────────────────────────────────────────
-NOISY_CSV = "../data/noisy.csv"
-LKF_CSV   = "../output/lkf_output.csv"
-EKF_CSV   = "../output/ekf_output.csv"
-OUT_DIR   = "../simulation"
-os.makedirs(OUT_DIR, exist_ok=True)
+# ── paths ──────────────────────────────────────────────────────────────────────
+BASE   = os.path.dirname(os.path.abspath(__file__))
+DATA   = os.path.join(BASE, "..", "output")
+OUTPUT = os.path.join(BASE, "..", "output")
+os.makedirs(OUTPUT, exist_ok=True)
 
-# ─── joint list (must match CSV column order) ─────────────────────────────────
-JOINT_NAMES = [
-    "pelvis","L5","L3","T12","T8","neck","head",
-    "shoulderRight","upperArmRight","forearmRight","handRight",
-    "shoulderLeft","upperArmLeft","forearmLeft","handLeft",
-    "upperLegRight","lowerLegRight","footRight","toeRight",
-    "upperLegLeft","lowerLegLeft","footLeft","toeLeft"
-]
-N_JOINTS = len(JOINT_NAMES)
-jidx = {name: i for i, name in enumerate(JOINT_NAMES)}
+lkf = pd.read_csv(os.path.join(DATA, "lkf_output.csv"))
+ekf = pd.read_csv(os.path.join(DATA, "ekf_output.csv"))
 
-# ─── skeleton connectivity (pairs of joint indices) ───────────────────────────
+JOINTS = list(dict.fromkeys([
+    re.sub(r'_(px|vx|ax|jx|py|vy|ay|jy|pz|vz|az|jz)$', '', c)
+    for c in lkf.columns
+]))
+N_JOINTS = len(JOINTS)   # 23
+
+# ── skeleton connectivity (parent → child) ─────────────────────────────────────
+# Joint index map
+JI = {j: i for i, j in enumerate(JOINTS)}
+
 BONES = [
-    # Spine
-    ("pelvis","L5"), ("L5","L3"), ("L3","T12"), ("T12","T8"), ("T8","neck"), ("neck","head"),
-    # Right arm
-    ("T8","shoulderRight"), ("shoulderRight","upperArmRight"),
-    ("upperArmRight","forearmRight"), ("forearmRight","handRight"),
-    # Left arm
-    ("T8","shoulderLeft"), ("shoulderLeft","upperArmLeft"),
-    ("upperArmLeft","forearmLeft"), ("forearmLeft","handLeft"),
-    # Right leg
-    ("pelvis","upperLegRight"), ("upperLegRight","lowerLegRight"),
-    ("lowerLegRight","footRight"), ("footRight","toeRight"),
-    # Left leg
-    ("pelvis","upperLegLeft"), ("upperLegLeft","lowerLegLeft"),
-    ("lowerLegLeft","footLeft"), ("footLeft","toeLeft"),
+    # spine
+    ("pelvis", "L5"), ("L5", "L3"), ("L3", "T12"), ("T12", "T8"),
+    ("T8", "neck"), ("neck", "head"),
+    # right arm
+    ("T8", "shoulderRight"), ("shoulderRight", "upperArmRight"),
+    ("upperArmRight", "forearmRight"), ("forearmRight", "handRight"),
+    # left arm
+    ("T8", "shoulderLeft"), ("shoulderLeft", "upperArmLeft"),
+    ("upperArmLeft", "forearmLeft"), ("forearmLeft", "handLeft"),
+    # right leg
+    ("pelvis", "upperLegRight"), ("upperLegRight", "lowerLegRight"),
+    ("lowerLegRight", "footRight"), ("footRight", "toeRight"),
+    # left leg
+    ("pelvis", "upperLegLeft"), ("upperLegLeft", "lowerLegLeft"),
+    ("lowerLegLeft", "footLeft"), ("footLeft", "toeLeft"),
 ]
-BONE_PAIRS = [(jidx[a], jidx[b]) for a, b in BONES]
 
-# ─── load data ────────────────────────────────────────────────────────────────
-print("Loading data...")
-noisy_df = pd.read_csv(NOISY_CSV)
-lkf_df   = pd.read_csv(LKF_CSV)
-ekf_df   = pd.read_csv(EKF_CSV)
-
-T = min(len(noisy_df), len(lkf_df), len(ekf_df))
-# Subsample to max 500 frames for animation speed
-STEP = max(1, T // 500)
-frames_idx = list(range(0, T, STEP))
-N_FRAMES = len(frames_idx)
-print(f"  Total frames: {T}, animating {N_FRAMES} (step={STEP})")
-
-def extract_positions(df, frame_indices):
-    """Returns array of shape (N_FRAMES, N_JOINTS, 3)"""
-    pos = np.zeros((len(frame_indices), N_JOINTS, 3))
-    for i, fi in enumerate(frame_indices):
-        for j, jname in enumerate(JOINT_NAMES):
-            # Noisy CSV has jname_x, jname_y, jname_z
-            # LKF/EKF have jname_px, jname_py, jname_pz
-            for ax_idx, suffix in enumerate(["_x","_y","_z"]):
-                col = f"{jname}{suffix}"
-                p_col = f"{jname}_p{suffix[1]}"  # e.g. pelvis_px
-                if col in df.columns:
-                    pos[i, j, ax_idx] = df[col].iloc[fi]
-                elif p_col in df.columns:
-                    pos[i, j, ax_idx] = df[p_col].iloc[fi]
+def get_positions(df, frame):
+    """Return (23, 3) array of joint positions at given frame."""
+    row = df.iloc[frame]
+    pos = np.zeros((N_JOINTS, 3))
+    for i, jt in enumerate(JOINTS):
+        pos[i, 0] = row[f"{jt}_px"]
+        pos[i, 1] = row[f"{jt}_py"]
+        pos[i, 2] = row[f"{jt}_pz"]
     return pos
 
-print("Extracting positions...")
-pos_noisy = extract_positions(noisy_df, frames_idx)
-pos_lkf   = extract_positions(lkf_df,   frames_idx)
-pos_ekf   = extract_positions(ekf_df,   frames_idx)
+# ── compute global axis limits ────────────────────────────────────────────────
+SUBSAMPLE = 10   # compute limits from every 10th frame
+all_vals = []
+for f in range(0, len(lkf), SUBSAMPLE):
+    p = get_positions(lkf, f)
+    all_vals.append(p)
+all_vals = np.vstack(all_vals)
+margin = 0.3
+xlim = (all_vals[:,0].min() - margin, all_vals[:,0].max() + margin)
+ylim = (all_vals[:,1].min() - margin, all_vals[:,1].max() + margin)
+zlim = (all_vals[:,2].min() - margin, all_vals[:,2].max() + margin)
 
-# ─── axis limits (common across all 3 panels) ─────────────────────────────────
-all_pos = np.concatenate([pos_noisy, pos_lkf, pos_ekf], axis=0)
-pad = 0.3
-xlim = (all_pos[:,:,0].min()-pad, all_pos[:,:,0].max()+pad)
-ylim = (all_pos[:,:,1].min()-pad, all_pos[:,:,1].max()+pad)
-zlim = (all_pos[:,:,2].min()-pad, all_pos[:,:,2].max()+pad)
+C_LKF = "#2563EB"
+C_EKF = "#DC2626"
 
-# ─── set up figure ────────────────────────────────────────────────────────────
-fig = plt.figure(figsize=(15, 5))
-fig.patch.set_facecolor("#0d1117")
+def draw_skeleton(ax, pos, color, alpha=1.0, lw=1.8):
+    """Draw skeleton lines on a 3D axis."""
+    for pa, ch in BONES:
+        if pa in JI and ch in JI:
+            i, j = JI[pa], JI[ch]
+            ax.plot([pos[i,0], pos[j,0]],
+                    [pos[i,1], pos[j,1]],
+                    [pos[i,2], pos[j,2]],
+                    color=color, alpha=alpha, lw=lw)
+    ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=color, s=8, alpha=alpha)
 
-axes3d = []
-for panel in range(3):
-    ax = fig.add_subplot(1, 3, panel+1, projection='3d')
-    ax.set_facecolor("#0d1117")
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_zlim(*zlim)
-    ax.set_xlabel("X", fontsize=7, color="gray")
-    ax.set_ylabel("Y", fontsize=7, color="gray")
-    ax.set_zlabel("Z", fontsize=7, color="gray")
-    ax.tick_params(colors="gray", labelsize=6)
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-    axes3d.append(ax)
+def setup_ax(ax, title):
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_zlim(*zlim)
+    ax.set_xlabel("X", fontsize=7, labelpad=1)
+    ax.set_ylabel("Y", fontsize=7, labelpad=1)
+    ax.set_zlabel("Z", fontsize=7, labelpad=1)
+    ax.set_title(title, fontsize=9, pad=4)
+    ax.tick_params(labelsize=6)
+    ax.view_init(elev=15, azim=45)
 
-titles  = ["Measured (Noisy)", "LKF Estimate", "EKF Estimate"]
-colors  = ["#e94560", "#4cc9f0", "#06d6a0"]
+# ── animation ─────────────────────────────────────────────────────────────────
+TOTAL_FRAMES = len(lkf)
+STEP = 3            # animate every 3rd frame  (3040 → ~1013 frames at 30fps ≈ 34 s)
+FRAMES = list(range(0, TOTAL_FRAMES, STEP))
+FPS = 30
 
-for ax, title, color in zip(axes3d, titles, colors):
-    ax.set_title(title, color=color, fontsize=9, pad=3)
+fig = plt.figure(figsize=(16, 6))
+fig.patch.set_facecolor("#111827")
+ax1 = fig.add_subplot(131, projection='3d')
+ax2 = fig.add_subplot(132, projection='3d')
+ax3 = fig.add_subplot(133, projection='3d')
+for ax in [ax1, ax2, ax3]:
+    ax.set_facecolor("#1F2937")
 
-# ─── draw one frame ───────────────────────────────────────────────────────────
-def draw_skeleton(ax, pos_frame, color):
-    ax.cla()
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_zlim(*zlim)
-    ax.set_facecolor("#0d1117")
-    ax.tick_params(colors="gray", labelsize=6)
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-    ax.grid(True, alpha=0.15)
+time_text = fig.text(0.5, 0.97, '', ha='center', va='top',
+                     color='white', fontsize=10)
 
-    # Draw bones
-    for a_idx, b_idx in BONE_PAIRS:
-        xs = [pos_frame[a_idx, 0], pos_frame[b_idx, 0]]
-        ys = [pos_frame[a_idx, 1], pos_frame[b_idx, 1]]
-        zs = [pos_frame[a_idx, 2], pos_frame[b_idx, 2]]
-        ax.plot(xs, ys, zs, color=color, linewidth=1.5, alpha=0.85)
-
-    # Draw joints
-    ax.scatter(pos_frame[:, 0], pos_frame[:, 1], pos_frame[:, 2],
-               c=color, s=12, alpha=0.9, depthshade=False)
-
-datasets = [pos_noisy, pos_lkf, pos_ekf]
-
-def animate(frame_num):
-    for ax, pos_data, color, title in zip(axes3d, datasets, colors, titles):
-        draw_skeleton(ax, pos_data[frame_num], color)
-        ax.set_title(title, color=color, fontsize=9, pad=3)
-    fig.suptitle(f"3D Full-Body Gait — Frame {frames_idx[frame_num]}",
-                 color="white", fontsize=11, y=1.01)
+def init():
     return []
 
-print("Building animation...")
-ani = animation.FuncAnimation(fig, animate, frames=N_FRAMES,
-                               interval=50, blit=False)
+def animate(fi):
+    frame = FRAMES[fi]
+    t = frame * 0.01
 
-# Try mp4 first, fall back to gif
-try:
-    Writer = animation.FFMpegWriter(fps=20, bitrate=1800)
-    out_path = os.path.join(OUT_DIR, "animation.mp4")
-    ani.save(out_path, writer=Writer, dpi=100,
-             savefig_kwargs={"facecolor": "#0d1117"})
-    print(f"Saved: {out_path}")
-except Exception as e:
-    print(f"FFMpeg not available ({e}), saving as GIF...")
-    out_path = os.path.join(OUT_DIR, "animation.gif")
-    ani.save(out_path, writer="pillow", fps=20,
-             savefig_kwargs={"facecolor": "#0d1117"})
-    print(f"Saved: {out_path}")
+    for ax in [ax1, ax2, ax3]:
+        ax.cla()
+        setup_ax(ax, "")
 
+    ax1.set_title("LKF Skeleton", fontsize=9, color="white", pad=4)
+    ax2.set_title("EKF Skeleton", fontsize=9, color="white", pad=4)
+    ax3.set_title("LKF vs EKF Overlay", fontsize=9, color="white", pad=4)
+
+    lkf_pos = get_positions(lkf, frame)
+    ekf_pos = get_positions(ekf, frame)
+
+    draw_skeleton(ax1, lkf_pos, C_LKF)
+    draw_skeleton(ax2, ekf_pos, C_EKF)
+    draw_skeleton(ax3, lkf_pos, C_LKF, alpha=0.8)
+    draw_skeleton(ax3, ekf_pos, C_EKF, alpha=0.6, lw=1.2)
+
+    time_text.set_text(f"t = {t:.2f} s  |  frame {frame}/{TOTAL_FRAMES}")
+    return []
+
+ani = animation.FuncAnimation(
+    fig, animate, frames=len(FRAMES),
+    init_func=init, interval=1000/FPS, blit=False
+)
+
+out_mp4 = os.path.join(OUTPUT, "skeleton_animation.mp4")
+writer = animation.FFMpegWriter(fps=FPS, bitrate=1800,
+                                extra_args=['-vcodec', 'libx264', '-pix_fmt', 'yuv420p'])
+print(f"Rendering {len(FRAMES)} frames → {out_mp4} ...")
+ani.save(out_mp4, writer=writer, dpi=100)
 plt.close()
-print("Simulation done.")
+print(f"  ✓ Saved: {out_mp4}")

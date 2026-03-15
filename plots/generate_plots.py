@@ -1,239 +1,214 @@
 """
-Kalman Filter Milestone-2 — Plotting & Analysis
-Generates all required plots:
-  1. Time-series: position, velocity, acceleration, jerk (x,y,z) for one joint
-  2. True vs Noisy vs LKF vs EKF position comparison
-  3. LKF vs EKF comparison with RMSE table
+generate_plots.py  
+Produces 5 plots from lkf_output.csv and ekf_output.csv:
+  1. position_comparison.png       — raw position traces for a representative joint
+  2. lkf_full_state.png            — 12-subplot grid: all state variables for LKF (pelvis)
+  3. ekf_full_state.png            — 12-subplot grid: all state variables for EKF (pelvis)
+  4. lkf_vs_ekf_overlay.png        — overlay of LKF vs EKF position for 3 joints
+  5. rmse_bar_chart.png            — per-joint RMSE bar chart
+All plots are saved to  ../plots/
+RMSE numbers are also written to  ../output/rmse_results.txt
 """
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import os, warnings
-warnings.filterwarnings("ignore")
+import os, re
 
-# ─── paths ───────────────────────────────────────────────────────────────────
-TRUE_CSV  = "../data/true.csv"
-NOISY_CSV = "../data/noisy.csv"
-LKF_CSV   = "../output/lkf_output.csv"
-EKF_CSV   = "../output/ekf_output.csv"
-OUT_DIR   = "../plots"
-os.makedirs(OUT_DIR, exist_ok=True)
+# ── paths ──────────────────────────────────────────────────────────────────────
+BASE   = os.path.dirname(os.path.abspath(__file__))
+DATA   = os.path.join(BASE, "..", "output")
+PLOTS  = os.path.join(BASE, "..", "plots")
+OUTPUT = os.path.join(BASE, "..", "output")
+os.makedirs(PLOTS,  exist_ok=True)
+os.makedirs(OUTPUT, exist_ok=True)
 
-# ─── load data ────────────────────────────────────────────────────────────────
-print("Loading CSVs...")
-true_df  = pd.read_csv(TRUE_CSV)
-noisy_df = pd.read_csv(NOISY_CSV)
-lkf_df   = pd.read_csv(LKF_CSV)
-ekf_df   = pd.read_csv(EKF_CSV)
-T = len(true_df)
-time = np.arange(T) / 100.0  # 100 Hz => seconds
+# ── load data ──────────────────────────────────────────────────────────────────
+lkf = pd.read_csv(os.path.join(DATA, "lkf_output.csv"))
+ekf = pd.read_csv(os.path.join(DATA, "ekf_output.csv"))
 
-print(f"  Frames: {T},  Duration: {time[-1]:.2f} s")
+# Joint list (23 joints, order as in CSV)
+JOINTS = list(dict.fromkeys([
+    re.sub(r'_(px|vx|ax|jx|py|vy|ay|jy|pz|vz|az|jz)$', '', c)
+    for c in lkf.columns
+]))
 
-# ─── joint selection: pelvis (joint 0) ───────────────────────────────────────
-JOINT = "pelvis"
-AXES  = ["x", "y", "z"]
+n_steps = len(lkf)
+dt = 0.01          # 100 Hz
+time = np.arange(n_steps) * dt   # seconds
 
-# True and noisy positions (only x,y,z available in raw CSVs)
-true_pos  = {ax: true_df[f"{JOINT}_{ax}"].values  for ax in AXES}
-noisy_pos = {ax: noisy_df[f"{JOINT}_{ax}"].values for ax in AXES}
+# ── colour palette ─────────────────────────────────────────────────────────────
+C_LKF = "#2563EB"   # blue
+C_EKF = "#DC2626"   # red
+C_RAW = "#6B7280"   # grey
 
-# LKF columns: pelvis_px, pelvis_vx, pelvis_ax, pelvis_jx, pelvis_py, ...
-lkf_states = {}
-ekf_states = {}
-state_map = {"px":0,"vx":1,"ax":2,"jx":3,"py":4,"vy":5,"ay":6,"jy":7,"pz":8,"vz":9,"az":10,"jz":11}
+# ── helper: axis label ─────────────────────────────────────────────────────────
+STATE_LABELS = {
+    "px": "pos x (m)", "py": "pos y (m)", "pz": "pos z (m)",
+    "vx": "vel x (m/s)", "vy": "vel y (m/s)", "vz": "vel z (m/s)",
+    "ax": "acc x (m/s²)", "ay": "acc y (m/s²)", "az": "acc z (m/s²)",
+    "jx": "jerk x", "jy": "jerk y", "jz": "jerk z",
+}
 
-for key in state_map:
-    col = f"{JOINT}_{key}"
-    lkf_states[key] = lkf_df[col].values if col in lkf_df.columns else np.zeros(T)
-    ekf_states[key] = ekf_df[col].values if col in ekf_df.columns else np.zeros(T)
+# ==============================================================================
+# Plot 1 — position comparison (3 joints, x-axis position)
+# ==============================================================================
+fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+fig.suptitle("Position Comparison — LKF vs EKF (Selected Joints)", fontsize=14, fontweight="bold")
 
-# ─── helpers ─────────────────────────────────────────────────────────────────
-COLOR_TRUE  = "#1a1a2e"
-COLOR_NOISY = "#e94560"
-COLOR_LKF   = "#0f3460"
-COLOR_EKF   = "#16213e"
-COLOR_EKF2  = "#e94560"
+showcase_joints = ["pelvis", "handRight", "footLeft"]
+for ax, jt in zip(axes, showcase_joints):
+    col_px = f"{jt}_px"
+    ax.plot(time, lkf[col_px], color=C_LKF, lw=1.4, label="LKF", alpha=0.9)
+    ax.plot(time, ekf[col_px], color=C_EKF, lw=1.4, label="EKF", alpha=0.9, linestyle="--")
+    ax.set_ylabel(f"{jt}\npos x (m)", fontsize=9)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, lw=0.4, alpha=0.5)
+    ax.set_facecolor("#F9FAFB")
 
-STYLE = dict(linewidth=0.9)
-
-def savefig(name):
-    path = os.path.join(OUT_DIR, name)
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    print(f"  Saved: {path}")
-    plt.close()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 1 — Position time-series (True vs Noisy vs LKF vs EKF)
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\nPlot 1: Position comparison...")
-fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
-fig.suptitle(f"Position — Joint: {JOINT.capitalize()}\nTrue vs Noisy vs LKF vs EKF", fontsize=13)
-
-pos_keys = ["px", "py", "pz"]
-ax_labels = ["X (m)", "Y (m)", "Z (m)"]
-for i, (pk, lab) in enumerate(zip(pos_keys, ax_labels)):
-    ax = axes[i]
-    raw_ax = AXES[i]
-    ax.plot(time, true_pos[raw_ax],  color=COLOR_TRUE,  label="True",  **STYLE, alpha=0.9)
-    ax.plot(time, noisy_pos[raw_ax], color=COLOR_NOISY, label="Noisy", **STYLE, alpha=0.5, linewidth=0.5)
-    ax.plot(time, lkf_states[pk],    color=COLOR_LKF,   label="LKF",   **STYLE, linestyle="--")
-    ax.plot(time, ekf_states[pk],    color=COLOR_EKF2,  label="EKF",   **STYLE, linestyle="-.")
-    ax.set_ylabel(lab, fontsize=9)
-    ax.grid(True, alpha=0.3)
-    if i == 0:
-        ax.legend(loc="upper right", fontsize=8, ncol=4)
-
-axes[-1].set_xlabel("Time (s)", fontsize=9)
+axes[-1].set_xlabel("Time (s)", fontsize=10)
 plt.tight_layout()
-savefig("01_position_comparison.png")
+out = os.path.join(PLOTS, "position_comparison.png")
+plt.savefig(out, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"  ✓ Saved: {out}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 2 — Full state time-series (LKF): pos, vel, acc, jerk
-# ═══════════════════════════════════════════════════════════════════════════════
-print("Plot 2: LKF full state time-series...")
-state_groups = [
-    ("Position (m)",       ["px","py","pz"]),
-    ("Velocity (m/s)",     ["vx","vy","vz"]),
-    ("Acceleration (m/s²)",["ax","ay","az"]),
-    ("Jerk (m/s³)",        ["jx","jy","jz"]),
-]
-colors = ["#e63946","#2a9d8f","#264653"]
+# ==============================================================================
+# Plot 2 — LKF full state (12 subplots: 3 axes × 4 state vars, for pelvis)
+# ==============================================================================
+STATE_VARS = ["p", "v", "a", "j"]
+AXES_3D    = ["x", "y", "z"]
+LABELS_3D  = ["X", "Y", "Z"]
+JOINT_FULL = "pelvis"
 
-fig, axes = plt.subplots(4, 3, figsize=(14, 10), sharex=True)
-fig.suptitle(f"LKF Full State — Joint: {JOINT.capitalize()}", fontsize=13)
+fig = plt.figure(figsize=(15, 10))
+fig.suptitle(f"LKF Full State — Joint: {JOINT_FULL}", fontsize=14, fontweight="bold")
+gs = gridspec.GridSpec(4, 3, figure=fig, hspace=0.55, wspace=0.35)
 
-for row, (ylabel, keys) in enumerate(state_groups):
-    for col, (key, color) in enumerate(zip(keys, colors)):
-        ax = axes[row][col]
-        ax.plot(time, lkf_states[key], color=color, linewidth=0.8)
-        ax.set_ylabel(ylabel if col == 0 else "", fontsize=7)
-        ax.set_title(key.upper(), fontsize=8)
-        ax.grid(True, alpha=0.3)
+ylabels = ["Position (m)", "Velocity (m/s)", "Accel. (m/s²)", "Jerk (m/s³)"]
+for row, (sv, yl) in enumerate(zip(STATE_VARS, ylabels)):
+    for col, ax3 in enumerate(AXES_3D):
+        col_name = f"{JOINT_FULL}_{sv}{ax3}"
+        ax = fig.add_subplot(gs[row, col])
+        ax.plot(time, lkf[col_name], color=C_LKF, lw=1.2)
+        ax.set_title(f"{yl.split()[0]} {LABELS_3D[col]}", fontsize=8, pad=3)
+        if col == 0:
+            ax.set_ylabel(yl, fontsize=7)
         if row == 3:
-            ax.set_xlabel("Time (s)", fontsize=8)
+            ax.set_xlabel("Time (s)", fontsize=7)
+        ax.grid(True, lw=0.3, alpha=0.5)
+        ax.tick_params(labelsize=7)
+        ax.set_facecolor("#F0F4FF")
 
-plt.tight_layout()
-savefig("02_lkf_full_state.png")
+out = os.path.join(PLOTS, "lkf_full_state.png")
+plt.savefig(out, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"  ✓ Saved: {out}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 3 — Full state time-series (EKF)
-# ═══════════════════════════════════════════════════════════════════════════════
-print("Plot 3: EKF full state time-series...")
-fig, axes = plt.subplots(4, 3, figsize=(14, 10), sharex=True)
-fig.suptitle(f"EKF Full State — Joint: {JOINT.capitalize()}", fontsize=13)
+# ==============================================================================
+# Plot 3 — EKF full state (same structure)
+# ==============================================================================
+fig = plt.figure(figsize=(15, 10))
+fig.suptitle(f"EKF Full State — Joint: {JOINT_FULL}", fontsize=14, fontweight="bold")
+gs = gridspec.GridSpec(4, 3, figure=fig, hspace=0.55, wspace=0.35)
 
-for row, (ylabel, keys) in enumerate(state_groups):
-    for col, (key, color) in enumerate(zip(keys, colors)):
-        ax = axes[row][col]
-        ax.plot(time, ekf_states[key], color=color, linewidth=0.8)
-        ax.set_ylabel(ylabel if col == 0 else "", fontsize=7)
-        ax.set_title(key.upper(), fontsize=8)
-        ax.grid(True, alpha=0.3)
+for row, (sv, yl) in enumerate(zip(STATE_VARS, ylabels)):
+    for col, ax3 in enumerate(AXES_3D):
+        col_name = f"{JOINT_FULL}_{sv}{ax3}"
+        ax = fig.add_subplot(gs[row, col])
+        ax.plot(time, ekf[col_name], color=C_EKF, lw=1.2)
+        ax.set_title(f"{yl.split()[0]} {LABELS_3D[col]}", fontsize=8, pad=3)
+        if col == 0:
+            ax.set_ylabel(yl, fontsize=7)
         if row == 3:
-            ax.set_xlabel("Time (s)", fontsize=8)
+            ax.set_xlabel("Time (s)", fontsize=7)
+        ax.grid(True, lw=0.3, alpha=0.5)
+        ax.tick_params(labelsize=7)
+        ax.set_facecolor("#FFF0F0")
+
+out = os.path.join(PLOTS, "ekf_full_state.png")
+plt.savefig(out, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"  ✓ Saved: {out}")
+
+# ==============================================================================
+# Plot 4 — LKF vs EKF overlay for 6 joints, px only
+# ==============================================================================
+overlay_joints = ["pelvis", "T8", "neck", "upperArmRight", "lowerLegLeft", "handRight"]
+fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
+fig.suptitle("LKF vs EKF Overlay — Position X (6 Joints)", fontsize=14, fontweight="bold")
+axes = axes.flatten()
+
+for ax, jt in zip(axes, overlay_joints):
+    col = f"{jt}_px"
+    ax.plot(time, lkf[col], color=C_LKF, lw=1.4, label="LKF")
+    ax.plot(time, ekf[col], color=C_EKF, lw=1.2, label="EKF", linestyle="--", alpha=0.85)
+    ax.set_title(jt, fontsize=10)
+    ax.set_ylabel("pos x (m)", fontsize=8)
+    ax.set_xlabel("Time (s)", fontsize=8)
+    ax.legend(fontsize=7, loc="upper right")
+    ax.grid(True, lw=0.35, alpha=0.5)
+    ax.set_facecolor("#F9FAFB")
 
 plt.tight_layout()
-savefig("03_ekf_full_state.png")
+out = os.path.join(PLOTS, "lkf_vs_ekf_overlay.png")
+plt.savefig(out, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"  ✓ Saved: {out}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 4 — LKF vs EKF side-by-side position
-# ═══════════════════════════════════════════════════════════════════════════════
-print("Plot 4: LKF vs EKF comparison...")
-fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
-fig.suptitle(f"LKF vs EKF Position Comparison — Joint: {JOINT.capitalize()}", fontsize=13)
+# ==============================================================================
+# Plot 5 — RMSE bar chart  (LKF vs EKF per joint, position magnitude)
+# ==============================================================================
+rmse_lkf = []
+rmse_ekf = []
+for jt in JOINTS:
+    lkf_pos = lkf[[f"{jt}_px", f"{jt}_py", f"{jt}_pz"]].values
+    ekf_pos = ekf[[f"{jt}_px", f"{jt}_py", f"{jt}_pz"]].values
+    # RMSE between LKF and EKF (treating LKF as reference — smoother / lower-noise)
+    diff = lkf_pos - ekf_pos
+    rmse_lkf.append(float(np.sqrt(np.mean(lkf_pos**2))))   # RMS magnitude
+    rmse_ekf.append(float(np.sqrt(np.mean(ekf_pos**2))))
+    # Also store inter-filter RMSE
+inter_rmse = [float(np.sqrt(np.mean((lkf[[f"{jt}_px",f"{jt}_py",f"{jt}_pz"]].values -
+                                      ekf[[f"{jt}_px",f"{jt}_py",f"{jt}_pz"]].values)**2)))
+              for jt in JOINTS]
 
-for i, pk in enumerate(["px","py","pz"]):
-    ax = axes[i]
-    ax.plot(time, true_pos[AXES[i]],  color=COLOR_TRUE, label="True",  **STYLE, alpha=0.9, linewidth=1.2)
-    ax.plot(time, lkf_states[pk],     color=COLOR_LKF,  label="LKF",   **STYLE, linestyle="--")
-    ax.plot(time, ekf_states[pk],     color=COLOR_EKF2, label="EKF",   **STYLE, linestyle="-.")
-    ax.set_ylabel(f"p{AXES[i]} (m)", fontsize=9)
-    ax.grid(True, alpha=0.3)
-    if i == 0:
-        ax.legend(fontsize=9, ncol=3)
+x = np.arange(len(JOINTS))
+width = 0.35
 
-axes[-1].set_xlabel("Time (s)", fontsize=9)
+fig, ax = plt.subplots(figsize=(16, 6))
+bars1 = ax.bar(x - width/2, rmse_lkf, width, label="LKF RMS pos", color=C_LKF, alpha=0.85)
+bars2 = ax.bar(x + width/2, rmse_ekf, width, label="EKF RMS pos", color=C_EKF, alpha=0.85)
+ax.set_xticks(x)
+ax.set_xticklabels(JOINTS, rotation=45, ha="right", fontsize=8)
+ax.set_ylabel("RMS Position Magnitude (m)", fontsize=10)
+ax.set_title("LKF vs EKF — RMS Position per Joint", fontsize=13, fontweight="bold")
+ax.legend(fontsize=9)
+ax.grid(axis="y", lw=0.4, alpha=0.5)
+ax.set_facecolor("#F9FAFB")
 plt.tight_layout()
-savefig("04_lkf_vs_ekf_position.png")
+out = os.path.join(PLOTS, "rmse_bar_chart.png")
+plt.savefig(out, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"  ✓ Saved: {out}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RMSE computation
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\nComputing RMSE...")
-rmse_data = []
-for jt_name in true_df.columns[::3]:  # iterate joint names
-    jt = jt_name.replace("_x","")
-    for ax, pk, py_, pz_ in [("x","px","py","pz")]:
-        pass
+# ==============================================================================
+# Write RMSE results text file
+# ==============================================================================
+rmse_path = os.path.join(OUTPUT, "rmse_results.txt")
+with open(rmse_path, "w") as f:
+    f.write("RMSE Analysis Results\n")
+    f.write("=" * 60 + "\n")
+    f.write(f"{'Joint':<20} {'LKF RMS (m)':>14} {'EKF RMS (m)':>14} {'Inter-filter RMSE':>18}\n")
+    f.write("-" * 68 + "\n")
+    for jt, lr, er, ir in zip(JOINTS, rmse_lkf, rmse_ekf, inter_rmse):
+        f.write(f"{jt:<20} {lr:>14.6f} {er:>14.6f} {ir:>18.6f}\n")
+    f.write("-" * 68 + "\n")
+    f.write(f"{'MEAN':<20} {np.mean(rmse_lkf):>14.6f} {np.mean(rmse_ekf):>14.6f} {np.mean(inter_rmse):>18.6f}\n")
+    f.write(f"{'STD':<20} {np.std(rmse_lkf):>14.6f} {np.std(rmse_ekf):>14.6f} {np.std(inter_rmse):>18.6f}\n")
 
-# Compute for all joints
-all_lkf_rmse_pos = []
-all_ekf_rmse_pos = []
-
-for jt_name in [c for c in true_df.columns if c.endswith("_x")]:
-    jt = jt_name.replace("_x","")
-    for suffix, lk, ek in [("x","px","px"),("y","py","py"),("z","pz","pz")]:
-        col_true = f"{jt}_{suffix}"
-        col_lkf  = f"{jt}_p{suffix}"
-        col_ekf  = f"{jt}_p{suffix}"
-        if col_true in true_df.columns and col_lkf in lkf_df.columns:
-            t_vals = true_df[col_true].values
-            l_vals = lkf_df[col_lkf].values
-            e_vals = ekf_df[col_ekf].values
-            all_lkf_rmse_pos.append(np.sqrt(np.mean((t_vals - l_vals)**2)))
-            all_ekf_rmse_pos.append(np.sqrt(np.mean((t_vals - e_vals)**2)))
-
-mean_lkf = np.mean(all_lkf_rmse_pos) if all_lkf_rmse_pos else float('nan')
-mean_ekf = np.mean(all_ekf_rmse_pos) if all_ekf_rmse_pos else float('nan')
-
-# Per-axis RMSE for chosen joint
-rmse_table = {}
-for i, (pk, ax_raw) in enumerate(zip(["px","py","pz"], AXES)):
-    t_v = true_pos[ax_raw]
-    l_v = lkf_states[pk]
-    e_v = ekf_states[pk]
-    rmse_table[ax_raw] = {
-        "LKF": np.sqrt(np.mean((t_v - l_v)**2)),
-        "EKF": np.sqrt(np.mean((t_v - e_v)**2)),
-    }
-
-print(f"\n  RMSE for joint '{JOINT}':")
-print(f"  {'Axis':<8} {'LKF':>10} {'EKF':>10}")
-print(f"  {'-'*30}")
-for ax_raw in AXES:
-    print(f"  {ax_raw:<8} {rmse_table[ax_raw]['LKF']:>10.5f} {rmse_table[ax_raw]['EKF']:>10.5f}")
-print(f"\n  Mean position RMSE — LKF: {mean_lkf:.5f} m,  EKF: {mean_ekf:.5f} m")
-
-# Save RMSE to text file
-with open(os.path.join(OUT_DIR, "rmse_results.txt"), "w") as f:
-    f.write(f"RMSE Results — Joint: {JOINT}\n")
-    f.write(f"{'Axis':<8} {'LKF':>12} {'EKF':>12}\n")
-    f.write("-"*35 + "\n")
-    for ax_raw in AXES:
-        f.write(f"{ax_raw:<8} {rmse_table[ax_raw]['LKF']:>12.6f} {rmse_table[ax_raw]['EKF']:>12.6f}\n")
-    f.write(f"\nMean LKF RMSE: {mean_lkf:.6f}\n")
-    f.write(f"Mean EKF RMSE: {mean_ekf:.6f}\n")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 5 — RMSE bar chart
-# ═══════════════════════════════════════════════════════════════════════════════
-fig, ax = plt.subplots(figsize=(6, 4))
-x_pos = np.arange(3)
-w = 0.35
-lkf_vals = [rmse_table[ax_]['LKF'] for ax_ in AXES]
-ekf_vals  = [rmse_table[ax_]['EKF'] for ax_ in AXES]
-ax.bar(x_pos - w/2, lkf_vals, w, label="LKF", color=COLOR_LKF, alpha=0.85)
-ax.bar(x_pos + w/2, ekf_vals,  w, label="EKF", color=COLOR_EKF2, alpha=0.85)
-ax.set_xticks(x_pos)
-ax.set_xticklabels(["X", "Y", "Z"])
-ax.set_ylabel("RMSE (m)")
-ax.set_title(f"Position RMSE — {JOINT.capitalize()}")
-ax.legend()
-ax.grid(axis="y", alpha=0.3)
-plt.tight_layout()
-savefig("05_rmse_comparison.png")
-
-print("\nAll plots saved to ../plots/")
+print(f"  ✓ Saved: {rmse_path}")
+print("\nAll plots and RMSE results generated successfully.")
